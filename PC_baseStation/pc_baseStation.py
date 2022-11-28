@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import ctypes
 
 from bleak import BleakScanner, BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -11,66 +12,95 @@ import time
 
 print("Hello world")
 
-address = "CE:71:7A:35:C3:18"
+address = [
+            "CE:71:7A:35:C3:18", # Station 1
+            "CD:30:BC:87:C4:35" # Station 2
+          ]
 
 # Bleak standards:
 UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 UART_RX_CHAR_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
-#
-# UUID from adafruit USART: looks like these are just reverse
-#
-# const uint8_t BLEUART_UUID_SERVICE[] =
-# {
-#     0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
-#     0x93, 0xF3, 0xA3, 0xB5, 0x01, 0x00, 0x40, 0x6E
-# };
+# async def main_discover():
+#     devices = await BleakScanner.discover()
+#     for d in devices:
+#         print(d)
 
-# const uint8_t BLEUART_UUID_CHR_RXD[] =
-# {
-#     0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
-#     0x93, 0xF3, 0xA3, 0xB5, 0x02, 0x00, 0x40, 0x6E
-# };
+# asyncio.run(main_discover())
+# exit()
 
-# const uint8_t BLEUART_UUID_CHR_TXD[] =
-# {
-#     0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
-#     0x93, 0xF3, 0xA3, 0xB5, 0x03, 0x00, 0x40, 0x6E
-# };
+def handle_rx(_: BleakGATTCharacteristic, data: bytearray):
+    #client.address
+    print("received:", data)
+    receive_queue.put(data)
 
-#async def main():
-    # devices = await BleakScanner.discover()
-    # for d in devices:
-    #     print(d)
+async def process_receive_queue():
+    itm = await receive_queue.get() 
+    print("In queue: ", itm)
 
-async def main(address):
-
-    def handle_rx(_: BleakGATTCharacteristic, data: bytearray):
-        print("received:", data)
+#single routine to handle one single device
+async def connect_to_device(address):
+    # probably want to manage the connection in a try / catch loop
+    print("connect_to_device - Trying to connect to ", address)
 
     async with BleakClient(address) as client:
         await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
 
-        print("Connected to to device")
+        print("Connected to to device: ", client.address)
 
-        loop = asyncio.get_running_loop()
-
-        # 
         while True:
+            await asyncio.sleep(0.05)
 
-            data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
+# Async function for starting the connections to the boards
+# Address list should be a list of all of the addresses to be connected to
+async def connect_to_all_devices(address_list):
+    receive_queue = asyncio.Queue
+    # set up tasks
+    taskList = []
+    for addr in address_list:
+        print("Adding ", addr, " to the task list")
+        taskList.append(asyncio.create_task(connect_to_device(addr))) # create the task, add it to the task list
 
-            # data will be empty on EOF (e.g. CTRL+D on *nix)
-            #if not data:
-                #break
+    print("Tring to connect to devices.")
+    for tsk in taskList:
+        print("About to try ", tsk)
+        await tsk
+    
+    print("Starting Queue Printout: ")
+    await process_receive_queue()
+
+# async def main(address):
+#     print("Start of main func")
+
+#     label = "This is the second one: "
+
+#     def handle_rx(_: BleakGATTCharacteristic, data: bytearray):
+#         print(label,"received:", data)
+
+#     async with BleakClient(address[1]) as client:
+#         await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
+
+#         print("Connected to to device")
+
+#         loop = asyncio.get_running_loop()
+
+#         # 
+#         while True:
+
+#             data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
+
+#             # data will be empty on EOF (e.g. CTRL+D on *nix)
+#             #if not data:
+#                 #break
 
 
-            print(".")
-            #time.sleep(.5)
+#             print(".")
+#             #time.sleep(.5)
 
-            #print("sent:", data)
+#             #print("sent:", data)
             
 
-
-asyncio.run(main(address))
+print("About to run main async")
+#asyncio.run(main(address))
+asyncio.run(connect_to_all_devices(address))
