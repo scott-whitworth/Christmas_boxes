@@ -9,9 +9,6 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 
 import time
 
-
-print("Hello world")
-
 address = [
             "CE:71:7A:35:C3:18", # Station 1
             "CD:30:BC:87:C4:35" # Station 2
@@ -21,6 +18,33 @@ address = [
 UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 UART_RX_CHAR_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+
+
+######################################
+## Utility to pare out board message
+######################################
+def parseBoardNum(data):
+    # Data is some numbers followed by not numbers
+    # return the numbers (in numeric form) followed by the rest of the data
+
+    if not chr(data[0]).isdigit(): #failure case, pass back error
+        print("Data[0] is not a digit! Sending back nothing!")
+        return -1, data
+
+    i = 0
+    nums = 0
+    while(chr(data[i]).isdigit()):
+        nums += int(chr(data[i])) # get value of number
+        
+        i = i + 1 # Update index
+        nums *= 10 # Keep moving 10's digit
+        
+    # At this point nums is shifted too much, so bring it back
+    nums /= 10
+    #i represents the rest of the string
+    sub_data = data[i:-2] # Removes the trailing "\r\n" as well
+
+    return int(nums), sub_data
 
 # async def main_discover():
 #     devices = await BleakScanner.discover()
@@ -37,8 +61,12 @@ async def connect_to_all_devices(address_list):
     # this will need to have each device identify itself in the message to know where to put the info
     receive_queue = asyncio.Queue()
 
-    #TODO: Need to figure out a list of send queues for each of the transmit queues
-    send_queue = asyncio.Queue()
+    #A whole collection of send_queues, so we can keep track of specific data for each device
+    # Managed in process_receive_queue and connect_to_device
+    individual_send_queues = []
+    for i in address_list:
+        print("Making queue for address: ", i)
+        individual_send_queues.append( asyncio.Queue() )
 
     ##############################
     # Define the async functions #
@@ -47,104 +75,108 @@ async def connect_to_all_devices(address_list):
     # callback that puts the received message into the receive queue
     # remember: this happens agnostic of which node sends it
     def handle_rx(_: BleakGATTCharacteristic, data: bytearray):
-        print("received:", data)
+        print("[HRX]:", data)
         #receive_queue.put(data)
         receive_queue.put_nowait(data)
 
+    # Manages the data that is put in the receive_queue in handle_rx
+    # TODO: This will be were the main logic goes
     async def process_receive_queue():
         print("started process_receive_queue, hopefully waiting for queue data")
         while True: #I am assuming this is going to keep looping, pulling out one at a time
             itm = await receive_queue.get() 
-            print("In PRQ queue: ", itm)
+            #print("In PRQ queue: ", itm)
+            print("Received a message from board ", int(itm[0]), " : ", end="")
+            if(itm[1] == ord('A')):
+                print("Accelerometer Triggered!")
 
+            # process received messages
+            if(int(itm[0]) == 1):
+                print("Attempting to send message to second one (boardID:2)")
+                await individual_send_queues[1].put(bytearray(b"RGRG"))
+            if(int(itm[0]) == 2):
+                print("Attempting to send message to first one (boardID:1)")
+                await individual_send_queues[0].put(bytearray(b"BRGB"))
+
+    # Manage info coming in from the keyboard
+    # Needs to have data in the form of [boardID][message]
+    # boardID is assumed to correlate to individual_send_queues indexes
     async def process_keyboard():
-        print("Getting info from the keyboard...")
+        print("Starting task to get info from the keyboard")
 
         loop = asyncio.get_running_loop()
 
         while True:
                 data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
-                print("Just got |",data,"| from keyboard. Adding to send_queue")
-                await send_queue.put(data)
+                print("Just got |",data,"| from keyboard. Parsing to correct board")
 
+                #Figure out which board is being updated
+                [select_board,selected_data] = parseBoardNum(data)
 
+                # Send data to the relevant board (make sure it is a valid board first)
+                if(select_board-1 < len(individual_send_queues) and select_board-1 >= 0 ):
+                    print("Adding ",selected_data," to board ",select_board,"'s individual queue")
+                    #                                        VV 0 offset
+                    await individual_send_queues[select_board-1].put(selected_data)
+                else:
+                    print("Cannot parse ",data," to send to individual queues. Got back: ",select_board, " + ", selected_data)
+
+                # if(data[0] == ord('1')):
+                #     print("Adding ",data[1:]," to board 1 individual queue")
+                #     await individual_send_queues[0].put(data[1:])
+                # elif (data[0] == ord('2')):
+                #     print("Adding ",data[1:]," to board 1 individual queue")
+                #     await individual_send_queues[1].put(data[1:])
+                # else:
+                #     print("Message cannot be parsed, don't know what to do with |",data,"|")
+                
+                #await send_queue.put(data)
 
 
     #single routine to handle connecting to one single device
     #TODO: need to make this lazy (i.e. keep trying to reconnect)
-    async def connect_to_device(address):
+    async def connect_to_device(address, boardID):
         # probably want to manage the connection in a try / catch loop
         print("connect_to_device - Trying to connect to ", address)
 
         async with BleakClient(address) as client:
             await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
             print("Connected to to device: ", client.address)
+            print("This is board ID: ", boardID, end="\n\n")
 
             # Set up client srevices
             client_service = client.services.get_service(UART_SERVICE_UUID)
             rx_char_service = client_service.get_characteristic(UART_RX_CHAR_UUID)
 
-            while True:
-                #TODO: I assume this is going to be where we need to manage the outgoing queues (this 'client' is a specific device)
-                await asyncio.sleep(0.05)
-                print("testing...")
-                data = await send_queue.get() # get data from send queue!
-                print("Just got |", data , "| from send_queue")
+            while True: # Keep running this forever
+                # Wait for data on this individual send_queue, then send it
+                data = await individual_send_queues[boardID-1].get() #Offset by one here
+                print("Board ",boardID," just got |", data , "| from i_s_q")
                 await client.write_gatt_char(rx_char_service, data)
-                #await asyncio.sleep(10)
-                #await client.write_gatt_char(rx_char_service, b'B')
 
 
 
-    # set up tasks
+    # set up tasks address_list
     taskList = []
-    for addr in address_list:
-        print("Adding ", addr, " to the task list")
-        taskList.append(asyncio.create_task(connect_to_device(addr))) # create the task, add it to the task list
+    for index in range(len(address_list)) :
+        print("Adding ", address_list[index], " to the task list")
+        taskList.append(asyncio.create_task(connect_to_device(address_list[index], index+1))) # create the task, add it to the task list
 
+    print("Adding process_receive_queue() to the taskList")
     taskList.append(asyncio.create_task(process_receive_queue())) # Add task to parse the queue
 
+    print("Adding keyboard processing to the taskList")
     taskList.append(asyncio.create_task(process_keyboard()))
 
-    print("Tring to connect to devices.")
+    print("Starting up task list.", end="\n\n")
     for tsk in taskList:
-        print("About to try ", tsk)
+        #print("About to try ", tsk)
         await tsk
-        print("Done with that task...", tsk)
+        print("Done with task...", tsk)
     
-    #print("Starting Queue Printout: ")
-    #await process_receive_queue() # does not look like it ever triggers
-
-# async def main(address):
-#     print("Start of main func")
-
-#     label = "This is the second one: "
-
-#     def handle_rx(_: BleakGATTCharacteristic, data: bytearray):
-#         print(label,"received:", data)
-
-#     async with BleakClient(address[1]) as client:
-#         await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
-
-#         print("Connected to to device")
-
-#         loop = asyncio.get_running_loop()
-
-#         # 
-#         while True:
-
-#             data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
-
-#             # data will be empty on EOF (e.g. CTRL+D on *nix)
-#             #if not data:
-#                 #break
 
 
-#             print(".")
-#             #time.sleep(.5)
-
-#             #print("sent:", data)
-            
+#############################################################
 
 print("About to run main async")
 #asyncio.run(main(address))
