@@ -14,6 +14,43 @@ Print& operator<<(Print& printer, T value)
 }
 #define endl "\n"
 
+//Utility class to hold / average colors
+class xMas_Color{
+  public:
+  uint8_t red;
+  uint8_t green;
+  uint8_t blue;
+
+  xMas_Color(int r, int g, int b) : red(r), green(g), blue(b){}
+  xMas_Color() : red(0), green(0), blue(0){}
+
+  void average(xMas_Color other, float weight){
+    this->red = static_cast<uint32_t>(this->red * (1.0 - weight) ) + static_cast<uint32_t>(other.red * weight); 
+    this->green = static_cast<uint32_t>(this->green * (1.0 - weight) ) + static_cast<uint32_t>(other.green * weight); 
+    this->blue = static_cast<uint32_t>(this->blue * (1.0 - weight) ) + static_cast<uint32_t>(other.blue * weight); 
+  }
+
+  uint32_t getColor() const{
+    return Adafruit_CPlay_NeoPixel::Color(red,green,blue);
+  }
+
+  bool operator==(xMas_Color other) const{
+    return (this->red == other.red ) && (this->green == other.green) && (this->blue == other.blue);
+  }
+
+  bool operator!=(xMas_Color other) const{
+    return !(*this == other);
+  }
+};
+
+//Not sure why this is not working
+//Helper just to print properly
+//Print& operator<<(Print& printer, xMas_Color clr){
+//  printer << "(" << clr.red << ","<<clr.green << "," << clr.blue << ")";
+//  return printer;
+//}
+
+
 //constants for figuring out BL Address
 typedef volatile uint32_t REG32;
 #define pREG32 (REG32 *)
@@ -38,6 +75,21 @@ void assignUniqueBoardAddress(){
   }
 
 }
+
+//A3 - IR LED OUT
+//A2 - IR LED IN
+#define IR_LED_OUT 10
+#define IR_IN 9
+
+//Color smooth transitions via averaging
+xMas_Color current_color; // Should only be set by the managing process
+xMas_Color processing_color; // Intermediate color to help with smoothing
+xMas_Color desired_color; // What the desired color should be 
+uint32_t color_count; // How many steps should be taken
+const uint32_t MAX_color_count = 20; // Determines max color steps
+
+// Manage the above values
+void processColor();
 
 // Set up for NeoPixel's attached to this board
 Adafruit_CPlay_NeoPixel neopixel = Adafruit_CPlay_NeoPixel(10,8); //10 lights, on pin 8
@@ -82,8 +134,21 @@ void setup() {
   neopixel.begin();
   neopixel.setBrightness(30);
 
+  //Preset the color smoothing
+  current_color =  xMas_Color(0,0,0);
+  processing_color = current_color;
+  desired_color = current_color; // What the desired color should be 
+  color_count = -1; // How many steps should be taken
+
   CircuitPlayground.begin();
   CircuitPlayground.setAccelRange(LIS3DH_RANGE_4_G);
+
+  //Set Up IR pins
+  //TODO: Probably put in something like only setting up for specific boards
+  pinMode(IR_IN, INPUT);
+  pinMode(IR_LED_OUT, OUTPUT);
+
+  digitalWrite(IR_LED_OUT,LOW); // Make sure it is turned off
 
   count = 0;
 
@@ -129,89 +194,106 @@ void setup() {
 
 }
 
-uint32_t color;
+
+
+
+uint8_t UART_In_buffer[10];
+uint8_t UART_In_size;
+
 
 void loop() {
-  // put your main code here, to run repeatedly:
-  if(count > 9){ count = 0; } // reset count
 
-  //Serial << "Loop: " << count << "\n";
-  float x = CircuitPlayground.motionX();
-  float y = CircuitPlayground.motionY();
-  float z = CircuitPlayground.motionZ();
-  float sum = abs(x) + abs(y) + abs(z);
-  //Serial << "Sum: " << sum <<  " \tX:" << x << "\tY:" << y << "\tZ:" << z << endl;
-
-  if(sum > 18.0){ // trigger level
-    Serial << "Sum: " << sum <<  " \tX:" << x << "\tY:" << y << "\tZ:" << z << endl;
-
-    //Send info via the BLUUART
-    uint8_t message[10];
-    message[0] = BOARD_ADDRESS;
-    message[1] = 'A';
-    ble_uart.write(message, 2);
-    //message[0] = BOARD_ADDRESS
-
-    //ble_uart.write(BOARD_ADDRESS);
-    //ble_uart.write(BOARD_ADDRESS + "Accel!");
-
-    intensity = 150;
-
-    color = neopixel.Color( 
-      static_cast<int>(255*(abs(x/20))),
-      static_cast<int>(255*(abs(y/20))),
-      static_cast<int>(255*abs(z/20)) );
-    
-    //neopixel.fill(color);
-  }
-
-  color = color * (intensity / 150.0);
-  neopixel.fill(color);
-  
-  //neopixel.setBrightness(intensity);
-  neopixel.show();
-
-  delay(75);
-  count++;
-  if(intensity > 0){
-    intensity -= 10;
-  }
-
+  // Manage incoming message / set state
+  UART_In_size = 0;
   while(ble_uart.available()){
-    uint8_t ch;
-    ch = static_cast<uint8_t>(ble_uart.read());
-    Serial << "|" << ch << "|" << endl;
+    //Keep looping until either done or size is maxed out
+    UART_In_buffer[UART_In_size] = static_cast<uint8_t>(ble_uart.read());
+    UART_In_size++;
 
-    uint32_t color2;
-
-    Serial << "Waiting for neopixel:|";
-    while(!neopixel.canShow()){
-      delay(5); // Wait until neopixel can display
-      Serial << ".";
+    if(UART_In_size >= 10){
+      Serial << "ERROR: UART BUFFER FULL! Size: " << UART_In_size << endl;
     }
-    Serial << "|" << endl;
+  }
 
-    if(ch == static_cast<uint8_t>('R')){
-      color2 = neopixel.Color(255,0,0);
+  if(UART_In_size > 0){
+    Serial << "Received message (size: UART_In_size: " << UART_In_size << " |" ;
+    for(int i = 0; i < UART_In_size; i++ ){
+      Serial << UART_In_buffer[i];
+    }
+    Serial << "|" <<endl;
+    
+    //Possibly received messages, manage it!
+    if(UART_In_buffer[0] == 'C'){
+      // Received Color Command
+      Serial << "Setting color." << endl;
 
-    } else if(ch == 71){
-      color2 = neopixel.Color(0,255,0);
-      
-    } else if(ch == 'B'){
-      color2 = neopixel.Color(0,0,255);
-      
-    } else {
-      color2 = neopixel.Color( 255,255,255);
-      
+      //Next character is the next color
+      if(UART_In_buffer[1] == 'R'){
+        desired_color = xMas_Color(255,0,0);
+      } else if(UART_In_buffer[1] == 'G'){
+        desired_color = xMas_Color(0,255,0);
+      } else if(UART_In_buffer[1] == 'B'){
+        desired_color = xMas_Color(0,0,255);
+      } else {
+        Serial << "Error Parsing Color Command! |" << UART_In_buffer[1] << "|" <<endl;
+        desired_color = xMas_Color(255,0,255);
+      }
     }
 
-    neopixel.fill(color2);
-    //neopixel.setBrightness(100);
+
+  }
+
+  //Update the color situation
+  processColor();
+  delay(50);
+
+}
+
+
+// Manage the above values
+void processColor(){
+  while(!neopixel.canShow()){
+    delay(2); // Wait until neopixel can display
+  }
+
+  //If we don't need to update, just leave
+  if((color_count == -1) && (processing_color == desired_color)){
+    return;
+  }
+
+  if(color_count == MAX_color_count){
+    //color_count is maxed out, reset things
+    color_count = -1;
+    current_color = desired_color; // Update to desired color
+    processing_color = desired_color;
+
+    //Send that info to the pixels
+    neopixel.fill(desired_color.getColor());
     neopixel.show();
 
-    delay(3000);
+    return; //We have nothing left to do
   }
 
+  // calculate some percentage of the total count 1/20 -> 19/20
+  float cScalar = color_count / static_cast<float>(MAX_color_count);
+
+  xMas_Color setColor = current_color;
+  setColor.average(processing_color, cScalar);
+
+  if(processing_color != desired_color){
+    //Received a new color! Lock in the current_color
+    current_color = setColor; //Make sure we grab the currently changing state
+
+    processing_color = desired_color; //Set processing_color
+    color_count = 0; //Reset the count
+  }
+
+  neopixel.fill(setColor.getColor());
+  neopixel.show();
+
+  color_count++;
+
+  return;
 }
 
 
