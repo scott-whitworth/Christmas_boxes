@@ -1,3 +1,6 @@
+//Separated for development on 9/28
+// Eventually merge them together
+// ## This is the IR Sender ##
 
 #include <Adafruit_CircuitPlayground.h> // https://github.com/adafruit/Adafruit_CircuitPlayground
 
@@ -60,8 +63,6 @@ typedef volatile uint32_t REG32;
 // Addresses of boards:
 // "CE:71:7A:35:C3:18", # Station 1
 // "CD:30:BC:87:C4:35", # Station 2
-// "E4:27:BB:05:B0:03", # Station 3
-// "CB:03:A2:60:90:6A", # Base Station
 int BOARD_ADDRESS;
 
 void assignUniqueBoardAddress(){
@@ -90,12 +91,6 @@ void IR_send_byte(uint8_t IR_byte);
 //Experimentally set to delay microseconds
 uint32_t IR_Delay(uint32_t delay);
 
-uint32_t IR_IN_BUFF[128]; //128 seems like overkill, but lets try
-uint8_t IR_IN_BUFF_SIZE;
-
-//Start Capturing IR Signal
-void captureIR();
-
 
 //Color smooth transitions via averaging
 xMas_Color current_color; // Should only be set by the managing process
@@ -119,17 +114,12 @@ BLEBas  ble_bas;  // battery
 int count;
 int intensity = 0;
 
-const uint32_t SERIAL_TIMEOUT = 100;
-
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
-  //This is all and good, but if you are running from battery, this won't work (beacuse serial never starts!)
-  //while(!Serial){
-  for(int c = 0; c < SERIAL_TIMEOUT && (!Serial); c++){
+  while(!Serial){
     delay(10);
-  } //Wait for serial to boot up
-  //TODO: This can work, but we need to time out, then probably block all Serial (like in the overload above)
+  } //Wait for serial to pop up
 
   Serial.println("Hello From Circuit Playground"); //This occurs too fast, would need a display to show
   Serial << "Starting to get Bluetooth working" << endl;
@@ -222,6 +212,12 @@ uint8_t UART_In_buffer[10];
 uint8_t UART_In_size;
 
 
+uint8_t toggle = 0;
+uint8_t IR_FLASH = 0;
+
+uint16_t countTestCNT = 500;
+uint32_t delayCount = 142; //138-146 seem good
+
 void loop() {
 
   // Manage incoming message / set state
@@ -255,11 +251,129 @@ void loop() {
         desired_color = xMas_Color(0,255,0);
       } else if(UART_In_buffer[1] == 'B'){
         desired_color = xMas_Color(0,0,255);
+      } else if(UART_In_buffer[1] == 'O'){ //Turn off IR
+        digitalWrite(IR_LED_OUT,LOW);
+      } else if(UART_In_buffer[1] == 'I'){ //Change IR Delay
+        Serial << "Chaning IR Delay... " << endl;
+        uint8_t count = 2; // Index of first number
+        uint32_t newNum = 0;
+        while(count < UART_In_size ){ //For each of the values left in the buffer...
+          newNum = newNum * 10; //Shift previous number over by 10
+          newNum += UART_In_buffer[count] - '0'; //Convert ASCII to int, and add it
+          count++;
+        }
+        Serial << "Changing IR_Delay to " << newNum << endl;
+        delayCount = newNum;
+      } else if(UART_In_buffer[1] == 'L'){ //TimeLoop
+        NRF_TIMER2->TASKS_STOP = 1; //Stop timer
+        NRF_TIMER2->TASKS_CLEAR = 1; //Clear timer to zero
+        NRF_TIMER2->MODE = TIMER_MODE_MODE_Timer << TIMER_MODE_MODE_Pos;   //sets up TIMEr mode as "Timer"
+        NRF_TIMER2->BITMODE = TIMER_BITMODE_BITMODE_32Bit << TIMER_BITMODE_BITMODE_Pos;    // sets values for Timer input
+        NRF_TIMER2->PRESCALER = 0;       //read at max resolution (at MCU speed)
+
+        Serial << "Starting..." << endl;
+
+        NRF_TIMER2->TASKS_START = 1;
+        NRF_TIMER2->TASKS_CAPTURE[0] = 1; //Grab time for 0
+        uint32_t cc0 = NRF_TIMER2->CC[0];
+        uint32_t cc2 = 0;
+
+        do{
+          NRF_TIMER2->TASKS_CAPTURE[2] = 1; //Capture 2
+          cc2 = NRF_TIMER2->CC[2];
+
+        } while( cc2 < 16000000 + cc0); //One second
+
+        NRF_TIMER2->TASKS_CAPTURE[1] = 1; //Grab timer 1
+
+        Serial << "...end" << endl;
+
+        Serial << "end 0 Current NRF Time: " << NRF_TIMER2->CC[0] << endl;
+        Serial << "end 1 Current NRF Time: " << NRF_TIMER2->CC[1] << endl;
+        Serial << "end 2 Current NRF Time: " << NRF_TIMER2->CC[2] << endl;
+        Serial << "end 3 Current NRF Time: " << NRF_TIMER2->CC[3] << endl;
+
+
+      } else if(UART_In_buffer[1] == 'Y'){ //Test Time
+        //Via testing:
+        // Delay(5):   69477 (13,895 / ms)
+        // Delay(10): 147623 (14,762 / ms)
+        // Delay(15): 225777 (15,051 / ms)
+        // Delay(20): 302841 (15,142 / ms)
+        // Delay(25): 380572 (15,222 / ms)
+        // Delay(30): 460127 (15,337 / ms)
+
+        //Testing 2
+        // Delay(500): 7990879 (15,981 / ms)
+        // Delay(600): 9584499 (15,974 / ms)
+
+        Serial << "Testing a delay(" << countTestCNT << ")" << endl;
+        
+          NRF_TIMER2->TASKS_STOP = 1;    //stops timer
+          NRF_TIMER2->TASKS_CLEAR = 1;    //clear timer to zero
+          NRF_TIMER2->MODE = TIMER_MODE_MODE_Timer << TIMER_MODE_MODE_Pos;   //sets up TIMEr mode as "Timer"
+          NRF_TIMER2->BITMODE = TIMER_BITMODE_BITMODE_32Bit << TIMER_BITMODE_BITMODE_Pos;    // sets values for Timer input
+          NRF_TIMER2->PRESCALER = 0;       //read at max resolution (at MCU speed)
+          Serial << "0 Current NRF Time: " << NRF_TIMER2->CC[0] << endl;
+          Serial << "1 Current NRF Time: " << NRF_TIMER2->CC[1] << endl;
+          Serial << "3 Current NRF Time: " << NRF_TIMER2->CC[2] << endl;
+          Serial << "4 Current NRF Time: " << NRF_TIMER2->CC[3] << endl;
+          NRF_TIMER2->TASKS_START = 1;      // starts the Timer
+          NRF_TIMER2->TASKS_CAPTURE[0] = 1;
+          //Serial << "Testing" << endl;
+
+
+
+        //Serial << "1 Current Time: " << xTaskGetTickCount() << endl;
+        delay(countTestCNT);
+        NRF_TIMER2->TASKS_CAPTURE[1] = 1;
+        NRF_TIMER2->TASKS_STOP = 1; //Stop Timer
+        //Serial << "2 Current Time: " << xTaskGetTickCount() << endl;
+        Serial << "end 0 Current NRF Time: " << NRF_TIMER2->CC[0] << endl;
+        Serial << "end 1 Current NRF Time: " << NRF_TIMER2->CC[1] << endl;
+        Serial << "end 2 Current NRF Time: " << NRF_TIMER2->CC[2] << endl;
+        Serial << "end 3 Current NRF Time: " << NRF_TIMER2->CC[3] << endl;
+
+        countTestCNT += 100;
+
+      } else if(UART_In_buffer[1] == 'T'){ //Test Time
+        Serial << "Start...";
+        //Testing the microsecond function
+        for(uint32_t i = 0; i < 15 ; i++){ //Seconds loop
+          for(uint32_t mil = 0; mil < 1000; mil++){ //Milliseconds loop
+            for(uint32_t usec = 0; usec < 40; usec++){
+              //delayMicroseconds(1);
+              //Should be 1 us
+              IR_Delay(25); //100us -> 10 of them in one milli
+            }
+          }
+          Serial << " . ";
+          //delay(1);
+        }
+        Serial << " end!" << endl;
+
+        //1000 : 1 -> 26 seconds
+        //100:10 -> 10 seconds (but no . . .)
+        //100:10 (15 seconds) -> 15.52
+        //50:20 (15 seconds) -> 15.55
+
       } else if(UART_In_buffer[1] == 'F'){ //IR Flash!
-        //Serial << "Sending IR flash!" << endl; 
-        // 140-145 ish looks ok, this is from testing        
+        Serial << "Sending IR flash!" << endl; 
+
+        //140-145 ish looks ok.
+        
         uint8_t IR_ID = 6;
         IR_send_ID(IR_ID);
+        // int delayCount = 12; //2.6x10^-5 -> 0.000 026
+        // for(uint32_t i = 0; i < 100; i++){
+        //   digitalWrite(IR_LED_OUT,HIGH);
+        //   //delay(delayCount);
+        //   delayMicroseconds(delayCount);
+        //   digitalWrite(IR_LED_OUT,LOW);
+        //   delayMicroseconds(delayCount);
+        //   //delay(delayCount);
+        // }
+        Serial << "IR FLASHED at " << delayCount << endl;
       } else {
         Serial << "Error Parsing Color Command! |" << UART_In_buffer[1] << "|" <<endl;
         desired_color = xMas_Color(255,0,255);
@@ -269,26 +383,34 @@ void loop() {
 
   }
 
-  //TODO: This may be on a command, depends on timing
-  //Check to see if IR is pulled LOW, this means the start of a signal
-  if(LOW == digitalRead(IR_IN)){ //TODO: This probably needs to be an interrup, but I am not sure how to do them!
-    captureIR(); //Seems like we got a IR signal!
-  }
-
   //Make sure IR LED is off
   digitalWrite(IR_LED_OUT,LOW);
   //Update the color situation
   processColor();
-  delay(10); //TODO: Tune this
+  delay(50);
 
 }
 
 
-//-----------------------
-// IR Utility Functions 
-// aka - this doesn't work, but we can at least get somethin'
-//-----------------------
-uint32_t delayCount = 142; //138-146 seem good
+//IR Remote (first two 'on', second two 'off' )
+//
+//
+//
+//ON IR_IN_BUFF_SIZE: 71 buffer: [ 10296 6311 849 793 821 784 816 788 804 800 800 804 811 785 815 789 811 793 821 2349 813 2320 852 2311 859 2312 850 2321 850 2313 858 2313 849 2322 849 2321 849 786 814 2318 845 797 803 801 813 791 809 788 812 791 727 794  792 1945 812 793 807 2354 817 2316 847 2324 847 2316 899 2272 899 56141 12483 3093 897 ]
+//ON IR_IN_BUFF_SIZE: 71 buffer: [ 11612 6304 856 787 813 791 809 796 811 793 807 798 802 796 819 783 817 788 812 2320 842 2246 591 2319 850 2321 842 2329 842 2322 849 2322 848 2324 839 2332 853 782 818 2314 849 793 807 797 803 801 814 782 862 742 858 745  847 2285 760 800 843 2027 861 2310 853 2318 853 2318 852 2311 860 55844 12740 2840 852 ]
+//                                            H   L   H   L   H   L   H   L   H   L   H   L   H   L   H   L   H   L    H   L    H   L    H   L    H   L    H   L    H   L    H   L    H   L    H   L   H   L    H   L   H   L   H   L   H   L   H   L   H   L    H   L    H   L   H   L    H   L    H   L    H   L    H   L    H   L     H      L   H   
+//                                                                                                                                                                                        ***                                                               ***                                                                                              
+//OF IR_IN_BUFF_SIZE: 75 buffer: [ 11012 6275 840 802 812 792 808 789 811 793 822 782 818 785 807 797 802 802 813 2227 860 2058 853 2318 852 2311 860 2310 861 2310 852 2318 853 2309 847 795  820 784 808 2323 848 794 806 790 810 794 821 783 809 795 805 2326 845 2234 832 559 809 2322 840 2330 841 2322 848 2323 840 2331 840 55846 12486 3098 847 134758 12818 3101 844 ]
+//OF IR_IN_BUFF_SIZE: 71 buffer: [ 8975  6300 859 783 817 787 805 800 800 804 811 711 806 790 724 628 820 784 816 2317 846 2325 845 2318 853 2318 845 2326 844 2319 852 2319 844 2328 843 800  814 783 817 2315 856 787 805 799 801 803 812 701 816 768 581 2319 842 2329 842 801 814 2311 860 2311 852 2318 852 2311 860 2310 861 55849 12484 3097 848 ]
+//                                            H   L   H   L   H   L   H   L   H   L   H   L   H   L   H   L   H   L    H   L    H   L    H   L    H   L    H   L    H   L    H   L    H   L    H   L   H   L    H   L   H   L   H   L   H   L   H   L   H   L    H   L    H   L   H   L    H   L    H   L    H   L    H   L    H   L     H      L   H   
+
+// Count++
+
+
+// IR_IN_BUFF_SIZE: 59 buffer: [ 617 389 290 2719 281 891 289 850 292 396 511 140 1416 663 287 1979 285 801 288 850 273 616 2190 663 287 2764 289 1423 295 849 1009 1463 284 6535 1621 897 290 1768 290 1975 296 1566 867 1237 865 76252 910 870 862 7836 527 6199 348 1282 450 15239 496 4322 286 ]
+//                               H   L   H   L    H   L   H   L   H   L   H   L   H    L   H   L    H   L   H   L   H   L   H    L   H   L    H   L    H   L   H    L    H   L    H    L   H   L    H   L    H   L    H   L    H   L     H   L   H   L    H   L    H   L    H   L     H   L    H
+//                                           m    0       1       2       3       4        5        6       7      !0       1        2        3        4       5         6        7     
+
 
 //const int delayCount = 25; //2.6x10^-5 -> 0.000 026 (12 is good)
 const uint8_t IR_BUF = 0b11111111; //All Ones (flip a bunch of bits)
@@ -300,15 +422,37 @@ const uint8_t IR_end_BUF = 0b01011010; //End   Align check
 // Sends FF A5 ID 5A [IR_BUF IR_beg_BUF <data> IR_end_BUF]
 void IR_send_ID(uint8_t IR_data){
 
+  for(uint8_t n = 0; n < 200; n++){
+    IR_send_byte(IR_BUF);
+    IR_send_byte(n);
+    IR_Delay(delayCount*4);
+  }
+
+
+
+  digitalWrite(IR_LED_OUT,LOW);
+  return;
+
   IR_send_byte(IR_BUF); //(delay count * 2 * 8) = ~ 0.00014 ms (142)
   digitalWrite(IR_LED_OUT,HIGH);
   delay(1);
-  IR_send_byte(IR_data);
+  IR_send_byte(IR_BUF);
   digitalWrite(IR_LED_OUT,HIGH);
   delay(1);
-  IR_send_byte(IR_beg_BUF);
+  IR_send_byte(IR_BUF);
   digitalWrite(IR_LED_OUT,HIGH);
-  
+  delay(1);
+  IR_send_byte(IR_BUF);
+  digitalWrite(IR_LED_OUT,HIGH);
+  delay(1);
+  IR_send_byte(IR_BUF);
+  digitalWrite(IR_LED_OUT,HIGH);
+  delay(1);
+
+  IR_send_byte(IR_beg_BUF);
+  IR_send_byte(IR_data);
+  IR_send_byte(IR_end_BUF);  
+
   digitalWrite(IR_LED_OUT,LOW); //Make sure IR LED is off
 }
 
@@ -331,12 +475,25 @@ void IR_send_byte(uint8_t IR_byte){
     IR_Delay(delayCount);
     digitalWrite(IR_LED_OUT,LOW);
 
-    if(ir_bit){ //Bit 1 = two counts, not sure why I did this
+    if(ir_bit){ //Bit 1 = two counts
       IR_Delay(delayCount*2);
     } else {
       IR_Delay(delayCount);
     }
-
+    /*
+    if(ir_bit){
+      //If 1: L to H
+      digitalWrite(IR_LED_OUT,LOW);
+      IR_Delay(delayCount);
+      digitalWrite(IR_LED_OUT,HIGH);
+      IR_Delay(delayCount);
+    } else {
+    //If 0: H to L
+      digitalWrite(IR_LED_OUT,HIGH);
+      IR_Delay(delayCount);
+      digitalWrite(IR_LED_OUT,LOW);
+      IR_Delay(delayCount);
+    }*/
     count--; //Update count
     IR_byte = IR_byte << 1; //Shift byte by one position
 
@@ -370,59 +527,9 @@ uint32_t IR_Delay(uint32_t delay){
   //
 
   NRF_TIMER2->TASKS_STOP = 1; //Stop Timer
+
   return 0;
 }
-
-//TODO: Send back a message when it receives a IR signal
-
-//Start Capturing IR Signal
-void captureIR(){
-  IR_IN_BUFF_SIZE = 0; // Set size to zero
-
-  uint32_t loopTime = 0; //Running loop counter
-
-  uint8_t curIR = LOW;
-  uint8_t oldIR = LOW;
-
-  //Loop until nothing changes for a while
-  while( loopTime < 1000000 && IR_IN_BUFF_SIZE < 128){ //TODO: Probably can drop this down
-    curIR = digitalRead(IR_IN);
-    
-    //Track the change
-    if(curIR != oldIR){
-      //Different IR states! Record what happened!
-      IR_IN_BUFF[IR_IN_BUFF_SIZE] = loopTime; //Store loopTime
-      IR_IN_BUFF_SIZE++; //Update IR_IN_BUFF_SIZE to the next location
-      loopTime = 0; //Reset loopTime back to zero
-    } 
-
-    //maybe do this in the 'else'
-    oldIR = curIR; //Update current signal
-
-    loopTime++; //Update LoopTime (this will eventually be the count for each 'pulse')
-    //delayMicroseconds(delayCount / 4); //Sample four times as fast as the sending
-  }
-
-  //TODO: Change this, just for testing
-  if(IR_IN_BUFF_SIZE > 10){
-    desired_color = xMas_Color(125,125,125);
-  } else {
-    desired_color = xMas_Color(255,0,255);
-  }
-
-  return;
-
-  Serial << "loopTime: " << loopTime << endl;
-  Serial << "Done getting IR Signal! " << endl;  
-  Serial << "IR_IN_BUFF_SIZE: " << IR_IN_BUFF_SIZE << " buffer: [ " ;
-  //Print out buffer:
-  for(uint8_t i = 0; i < IR_IN_BUFF_SIZE; i++ ){
-    Serial << IR_IN_BUFF[i] << " ";
-  }
-  Serial << "]" << endl;
-}
-
-
 
 
 // Manage the above values

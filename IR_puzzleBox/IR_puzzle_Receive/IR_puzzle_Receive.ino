@@ -1,3 +1,6 @@
+//Separated for development on 9/28
+// Eventually merge them together
+// ## This is the IR receiver ##
 
 #include <Adafruit_CircuitPlayground.h> // https://github.com/adafruit/Adafruit_CircuitPlayground
 
@@ -60,8 +63,6 @@ typedef volatile uint32_t REG32;
 // Addresses of boards:
 // "CE:71:7A:35:C3:18", # Station 1
 // "CD:30:BC:87:C4:35", # Station 2
-// "E4:27:BB:05:B0:03", # Station 3
-// "CB:03:A2:60:90:6A", # Base Station
 int BOARD_ADDRESS;
 
 void assignUniqueBoardAddress(){
@@ -83,19 +84,12 @@ void assignUniqueBoardAddress(){
 #define IR_LED_OUT 10
 #define IR_IN 9
 
-//Header comments below
-void IR_send_ID(uint8_t IR_data);
-void IR_send_byte(uint8_t IR_byte);
-
-//Experimentally set to delay microseconds
-uint32_t IR_Delay(uint32_t delay);
 
 uint32_t IR_IN_BUFF[128]; //128 seems like overkill, but lets try
 uint8_t IR_IN_BUFF_SIZE;
 
 //Start Capturing IR Signal
 void captureIR();
-
 
 //Color smooth transitions via averaging
 xMas_Color current_color; // Should only be set by the managing process
@@ -119,17 +113,12 @@ BLEBas  ble_bas;  // battery
 int count;
 int intensity = 0;
 
-const uint32_t SERIAL_TIMEOUT = 100;
-
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
-  //This is all and good, but if you are running from battery, this won't work (beacuse serial never starts!)
-  //while(!Serial){
-  for(int c = 0; c < SERIAL_TIMEOUT && (!Serial); c++){
+  while(!Serial){
     delay(10);
-  } //Wait for serial to boot up
-  //TODO: This can work, but we need to time out, then probably block all Serial (like in the overload above)
+  } //Wait for serial to pop up
 
   Serial.println("Hello From Circuit Playground"); //This occurs too fast, would need a display to show
   Serial << "Starting to get Bluetooth working" << endl;
@@ -212,7 +201,6 @@ void setup() {
   startAdv();
 
   Serial << "Done setting up bluTooth" << endl;
-
 }
 
 
@@ -221,9 +209,7 @@ void setup() {
 uint8_t UART_In_buffer[10];
 uint8_t UART_In_size;
 
-
 void loop() {
-
   // Manage incoming message / set state
   UART_In_size = 0;
   while(ble_uart.available()){
@@ -255,11 +241,6 @@ void loop() {
         desired_color = xMas_Color(0,255,0);
       } else if(UART_In_buffer[1] == 'B'){
         desired_color = xMas_Color(0,0,255);
-      } else if(UART_In_buffer[1] == 'F'){ //IR Flash!
-        //Serial << "Sending IR flash!" << endl; 
-        // 140-145 ish looks ok, this is from testing        
-        uint8_t IR_ID = 6;
-        IR_send_ID(IR_ID);
       } else {
         Serial << "Error Parsing Color Command! |" << UART_In_buffer[1] << "|" <<endl;
         desired_color = xMas_Color(255,0,255);
@@ -269,111 +250,41 @@ void loop() {
 
   }
 
-  //TODO: This may be on a command, depends on timing
+
   //Check to see if IR is pulled LOW, this means the start of a signal
   if(LOW == digitalRead(IR_IN)){ //TODO: This probably needs to be an interrup, but I am not sure how to do them!
     captureIR(); //Seems like we got a IR signal!
   }
 
-  //Make sure IR LED is off
-  digitalWrite(IR_LED_OUT,LOW);
+
+    // uint32_t count = 0;
+    // while(true){
+    //   for(uint32_t i =0 ; i < 1000000; i++){
+    //     //Serial.println(i);
+    //     //if( digitalReadFast(2) == HIGH ){
+    //     if(digitalRead(IR_IN) == HIGH){
+    //       count++;
+    //     }
+    //   }
+      
+    //   Serial << "Count: " << count << endl;
+    //   count = 0;
+    // }
+
+
+
   //Update the color situation
   processColor();
-  delay(10); //TODO: Tune this
+  //delay(50);
+
+  delay(5); //Needs to align with IR_send
 
 }
 
+const int delayCount = 12; //2.6x10^-5 -> 0.000 026
 
-//-----------------------
-// IR Utility Functions 
-// aka - this doesn't work, but we can at least get somethin'
-//-----------------------
-uint32_t delayCount = 142; //138-146 seem good
-
-//const int delayCount = 25; //2.6x10^-5 -> 0.000 026 (12 is good)
-const uint8_t IR_BUF = 0b11111111; //All Ones (flip a bunch of bits)
-const uint8_t IR_beg_BUF = 0b10100101; //Start Align check
-const uint8_t IR_end_BUF = 0b01011010; //End   Align check
-
-//Send info out the IR LED
-//Assumes IR pin is set above in IR_LED_OUT
-// Sends FF A5 ID 5A [IR_BUF IR_beg_BUF <data> IR_end_BUF]
-void IR_send_ID(uint8_t IR_data){
-
-  IR_send_byte(IR_BUF); //(delay count * 2 * 8) = ~ 0.00014 ms (142)
-  digitalWrite(IR_LED_OUT,HIGH);
-  delay(1);
-  IR_send_byte(IR_data);
-  digitalWrite(IR_LED_OUT,HIGH);
-  delay(1);
-  IR_send_byte(IR_beg_BUF);
-  digitalWrite(IR_LED_OUT,HIGH);
-  
-  digitalWrite(IR_LED_OUT,LOW); //Make sure IR LED is off
-}
-
-//Utility function to send a single byte of data
-// String:   1  0  1  0  0  1  0  1
-//           LH HL LH HL HL LH HL LH
-//Make sure prints are commented out! Way too slow!
-void IR_send_byte(uint8_t IR_byte){
-  uint8_t count = 8;
-  uint8_t ir_bit = 0;
-
-  //Serial << "In IR_send_byte, trying to send: " << IR_byte << endl;
-
-  //Loop count number of times (should be 8)
-  while(count > 0){
-    //Isolate bit (from left to right)
-    ir_bit = (IR_byte & 0x80); //Mask out MSB, capture in ir_bit
-
-    digitalWrite(IR_LED_OUT,HIGH);
-    IR_Delay(delayCount);
-    digitalWrite(IR_LED_OUT,LOW);
-
-    if(ir_bit){ //Bit 1 = two counts, not sure why I did this
-      IR_Delay(delayCount*2);
-    } else {
-      IR_Delay(delayCount);
-    }
-
-    count--; //Update count
-    IR_byte = IR_byte << 1; //Shift byte by one position
-
-    //Serial << "ir_bit: |" << ir_bit << "| ";
-    //Serial << "Count: " << count << endl;
-
-  }
-  return;
-}
-
-//Based on v1.10.pdf: 6.30
-//and https://devzone.nordicsemi.com/f/nordic-q-a/67998/nrf52-pulse-duration-counter---going-from-1-micro-second-resolution-to-nano-seconds
-//Argument: delay in microseconds
-uint32_t IR_Delay(uint32_t delay){
-
-  NRF_TIMER2->TASKS_STOP = 1;    //stops timer
-  NRF_TIMER2->TASKS_CLEAR = 1;    //clear timer to zero
-  NRF_TIMER2->MODE = TIMER_MODE_MODE_Timer << TIMER_MODE_MODE_Pos;   //sets up TIMEr mode as "Timer"
-  NRF_TIMER2->BITMODE = TIMER_BITMODE_BITMODE_32Bit << TIMER_BITMODE_BITMODE_Pos;    // sets values for Timer input
-  NRF_TIMER2->PRESCALER = 0;       //read at max resolution (at MCU speed)
-  NRF_TIMER2->TASKS_START = 1;      // starts the Timer
-  //Timer should be good to go
-  NRF_TIMER2->TASKS_CAPTURE[0] = 1; //Capture time
-  uint32_t cc0 = NRF_TIMER2->CC[0]; //Grab current time
-  uint32_t cc1 = 0;
-  do{
-    NRF_TIMER2->TASKS_CAPTURE[1] = 1; //Grab [1]
-    cc1 = NRF_TIMER2->CC[1];
-  } while ( cc1 < (delay*15) ); //Delay mult: in theory it should be 16, but there are confounders.
-  //Looks like 16 is close, but there is some over head that is making this a bit long. 
-  //
-
-  NRF_TIMER2->TASKS_STOP = 1; //Stop Timer
-  return 0;
-}
-
-//TODO: Send back a message when it receives a IR signal
+// IR_IN_BUFF[128]; //128 seems like overkill, but lets try
+// IR_IN_BUFF_SIZE;
 
 //Start Capturing IR Signal
 void captureIR(){
@@ -403,15 +314,6 @@ void captureIR(){
     //delayMicroseconds(delayCount / 4); //Sample four times as fast as the sending
   }
 
-  //TODO: Change this, just for testing
-  if(IR_IN_BUFF_SIZE > 10){
-    desired_color = xMas_Color(125,125,125);
-  } else {
-    desired_color = xMas_Color(255,0,255);
-  }
-
-  return;
-
   Serial << "loopTime: " << loopTime << endl;
   Serial << "Done getting IR Signal! " << endl;  
   Serial << "IR_IN_BUFF_SIZE: " << IR_IN_BUFF_SIZE << " buffer: [ " ;
@@ -421,8 +323,6 @@ void captureIR(){
   }
   Serial << "]" << endl;
 }
-
-
 
 
 // Manage the above values

@@ -10,8 +10,10 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 import time
 
 address = [
-            "CE:71:7A:35:C3:18", # Station 1
-            "CD:30:BC:87:C4:35" # Station 2
+            #"CE:71:7A:35:C3:18", # Station 1
+            #"CD:30:BC:87:C4:35", # Station 2
+            "E4:27:BB:05:B0:03", # Station 3
+            "CB:03:A2:60:90:6A" # Base Station
           ]
 
 # Bleak standards:
