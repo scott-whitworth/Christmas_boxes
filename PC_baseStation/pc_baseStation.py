@@ -13,6 +13,10 @@ address = [
             #"CE:71:7A:35:C3:18", # Station 1
             #"CD:30:BC:87:C4:35", # Station 2
             "E4:27:BB:05:B0:03", # Station 3
+            #"E6:BA:04:A1:64:C2", # Station 4
+            #"CB:96:AC:0E:E6:87", #Station 5
+            #"FC:E7:8D:26:C0:79", #Station 6
+            #"F0:8F:E3:E3:6D:C7", #Station 7
             "CB:03:A2:60:90:6A" # Base Station
           ]
 
@@ -91,6 +95,10 @@ async def connect_to_all_devices(address_list):
             print("Received a message from board ", int(itm[0]), " : ", end="")
             if(itm[1] == ord('A')):
                 print("Accelerometer Triggered!")
+            elif(itm[1] == ord('R')):
+                print("IR Flash Detected!")
+                print("Attempting to trigger servo")
+                await individual_send_queues[1].put(bytearray(b"CSO"))
 
             # process received messages
             if(int(itm[0]) == 1):
