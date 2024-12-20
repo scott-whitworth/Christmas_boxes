@@ -1,17 +1,18 @@
-
 /* Message Plan
 To PuzzleBox:
 Always starts with 'C'
 CCrgb -  Command Color w/ RGB values
 CL[R/G/B] - Command coLor w/ preset colors (R - Red, G - Green, B - Blue) 
 CF - Command ir Flash - Single pulse of the IR LED
-CA - Command Report Accel
+CA - Command report Accel
+CT - Command report Temperature
 
 From PuzzleBox:
-First element is this board address
+First element is always this board address (1-7)
 nR - Received an IR flash
 nXxYyZz[S/R] - Response for the Command Report Accel (x/y/z are 0-255 values for each accelerometer) 2 second average, S:shake, R:rest (this has to do with if there were extremes in the last 2 seconds)
-nAn - If accelerometer threshold is met 
+nAn - If accelerometer threshold is met
+nTt - Response for report Temperature, t will be in F (unsigned) 
 */
 
 
@@ -270,7 +271,7 @@ const uint32_t ACCEL_MAX = 40; //Assuming 5ms delay, results in 5 measurments pe
 const uint8_t ACCEL_DATA_MAX = 10; //How many entries are we going to keep
 float accelData[ACCEL_DATA_MAX][3]; // ten measurments (2 seconds), of x / y / z
 uint8_t cur_accel = 0; //Should be pointing to the most recent reading
-const float ACCEL_SHAKE_THRESH = 15.0; // Value what will trigger a message
+const float ACCEL_SHAKE_THRESH = 12.0; // Value what will trigger a message
 //Utility variables (just to save initialization time)
 float x;
 float y;
@@ -328,6 +329,16 @@ void loop() {
       } else if(UART_In_buffer[1] == 'F'){ //IR Flash!      
         uint8_t IR_ID = 6; //This value probably does not matter, the IR receiver is not working that way
         IR_send_ID(IR_ID);
+      } else if(UART_In_buffer[1] == 'T'){ //Report back on Temperature
+        float curTemp = CircuitPlayground.temperatureF();
+        Serial << "Current temp       : " << curTemp << endl;
+        Serial << "Current temp (int) : " << static_cast<uint8_t>(CircuitPlayground.temperatureF()) << endl;
+
+        UART_send_message[0] = BOARD_ADDRESS;
+        UART_send_message[1] = 'T'; //Send a Accelleromter message!
+        UART_send_message[2] = static_cast<uint8_t>(CircuitPlayground.temperatureF()); //Hopefully the conversion works!
+        ble_uart.write(UART_send_message,3);  
+
       } else if(UART_In_buffer[1] == 'A'){ //Calculate IR Info
 
         Serial << "Summing up accellerometer data:" << endl;
