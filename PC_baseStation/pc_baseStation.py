@@ -85,7 +85,6 @@ game_State = 0 # Overall state of the game, see below
 #           Action: take immediate temp reading for comparison later
 #           Light: purple
 #           Transition: getting to be some value temp lower from initialReading
-#           TODO: Need to set this target up and check for it
 tempTarget = [0] * len(address)
 tempCoolOffset = 2 #TODO: Is this reasonable?
 
@@ -94,6 +93,10 @@ tempCoolOffset = 2 #TODO: Is this reasonable?
 #           Light: Snow Blue
 #           Transition: getting every box in the correct IR order
 #           Need to set an order, it is ok to get multiple of the boxes to your right, but not left
+#                Order will be numerical, so if only lower boxes see you -> correct
+#                IR LED is on the left side of the box, the IR receiver is on the right
+st1_order = [0]*len(address) #We are going to make this a count down
+st1_orderMAX = 4
 # 
 # State 2: Ordered 
 #           Light: Green when in the correct Order (i.e. the box(s) to its right are correct), back to Snow Blue otherwise
@@ -213,6 +216,7 @@ async def connect_to_all_devices(address_list):
         global lockState
         global lockDesire
         global game_State
+        global st1_orderMAX
 
         print("started gameLogic. Game is now running")
 
@@ -253,6 +257,9 @@ async def connect_to_all_devices(address_list):
                 await individual_send_queues[lockBox].put(bytearray(b"CSO"))
             else:
                 await individual_send_queues[lockBox].put(bytearray(b"CSC"))
+
+        async def irPulse(board): #Pulse the IR LED of this box
+            await individual_send_queues[board].put(bytearray(b"CF"))
           
         await asyncio.sleep(10) #Give it some time to set up
         #TODO: This should be based on connected boards
@@ -272,11 +279,15 @@ async def connect_to_all_devices(address_list):
         
         await asyncio.sleep(2)
 
+        #TESTING
+        ##game_State = 1
+
 
         while True:
             os.system('cls') # Possibly remove this if DEBUGGING
             print("GL Loop start")
 
+            ###### Game state 0 ######
             if(game_State == 0): # Waiting to transition to state 1, boxes need to cool off
                 # Do stage 1 stuff
                 atTemp = 0
@@ -293,7 +304,75 @@ async def connect_to_all_devices(address_list):
                 if atTemp == numberOfGameBoxes:
                     game_State = 1
             
+            ###### Game State 1 ######
             elif(game_State == 1):
+                # Need to scan who can see who
+                # For each box, pulse IR
+                for bx in range(2,len(address)):              
+                    if(bx != lockBox): # Don't need to send this to the lock box
+                        #print ("Checking box " , bx) #DEBUG
+
+                        await irPulse(bx) #Send out a pulse!
+                        # Based on experiements, we need to wait at least 0.2s for the pulse to be received
+                        await asyncio.sleep(0.4)
+                        #TODO: Maybe we do a clear? No we can't do that because of IR pulse blocking?
+                        # The issue is IR pulses may take longer than 0.4 to send, so we step on ourselves
+
+                        #     After pulse, see who saw it
+                        singleNeighbor = False # This is just the immediate neighbor (this might not work if we don't have consecutive boxes TODO: Check this!)
+                        upperNeighbors = False # If any 'upper Neighbors' (boxes with higher numbers) saw this, we are out of order
+
+                        #Check all of the irRX signals, these are asynchronously set via the receive process
+                        for ir in range(2,len(address)):
+                            if irRX_SI[ir]: #IR message was received
+                                #print("Box " , ir , " received a pulse!") #DEBUG
+                                # Clear out the pulse
+                                irRX_SI[ir] = False
+
+                                if ir == bx-1: #This is what we want! Immediate neighbors are in the correct location
+                                    #print("^^^^ Neighbor Boxes! ^^^^ ",ir, " saw " , bx , " pulse!" )
+                                    singleNeighbor = True
+                                if ir > bx: #Bad news! The upper boxes also saw this!
+                                    #print("VVVVV Upper Neighbor VVVVV",ir, " saw " , bx , " pulse!" )
+                                    upperNeighbors = True
+
+                        #After checking who saw who, mark box accordingly
+                        # Special condition for 2 (it should be the last box in the row, no one should see it)
+                        if (bx == 2) and not upperNeighbors: # We are currently looking at 2 and none of the other boxes saw it
+                            #print("Box 2 is in the right spot!")
+                            st1_order[bx] = st1_orderMAX # 2 is in the right spot! i.e. no upper neighbors can see it
+                        elif singleNeighbor and not upperNeighbors: #If the single neighbor to the left (down one) saw you, and none of the upper neighbors saw you
+                            #print("Box ",bx," is in the right spot!")
+                            st1_order[bx] = st1_orderMAX #This box is in the right spot!
+                        else:
+                            st1_order[bx] -= 1
+
+                # At this point we should have a well updated st1_order array of counts
+                correctBoxes = 0
+                st1_order_print =  "                   2 3 4 5 6 7\n"
+                st1_order_print += "Stage 1 status: ["
+                for bx in range(1,len(address)): #For each box:
+                    if st1_order[bx] > 0:
+                        await setColor(bx,0,255,40) #Set Green
+                        game_SI[bx] = 2
+                        correctBoxes += 1
+                        st1_order_print += "G "
+                    else: #st1_order is 0 or less
+                        st1_order[bx] = 0 #This prevents round over
+                        st1_order_print += "B "
+                        await setColor(bx,50,50,250) #Set back to Blue
+                        game_SI[bx] = 1
+
+                #Finish up status and print
+                st1_order_print += "]"
+                print (st1_order_print)
+
+                #If we have all of the boxes in order, we can be done!
+                if(correctBoxes == numberOfGameBoxes):
+                    game_State = 2              
+
+
+            elif(game_State == 2):
                 print("DONE!")
                 await setColorAll(10,10,10)
                 lockDesire = True
@@ -325,10 +404,14 @@ async def connect_to_all_devices(address_list):
                     tmp += " SHOCK! "
                 if(irRX_SI[i]):
                     tmp += " IR_Flag"
+                    irRX_SI[i] = False #Reset this flag #TODO: This might not be what we want!
                 tmp += " t: " + str(temp_SI[i]) + "\n" 
             
             print(tmp+"\n")
-            await asyncio.sleep(2.0)
+            if(game_State == 2):
+                await asyncio.sleep(1.0) #2 has a bunch of waiting in the IR check itself
+            else:
+                await asyncio.sleep(2.0)
 
 
     # Manage info coming in from the keyboard
@@ -385,7 +468,7 @@ async def connect_to_all_devices(address_list):
                 while True: # Keep running this forever
                     # Wait for data on this individual send_queue, then send it
                     data = await individual_send_queues[boardID].get() #Offset by one here
-                    print("Board ",boardID," just got |", data , "| from i_s_q") #DEBUG
+                    #print("Board ",boardID," just got |", data , "| from i_s_q") #DEBUG
                     await client.write_gatt_char(rx_char_service, data)
         
         except Exception as e: #Grab the exception, this should only happen if a connection is not made

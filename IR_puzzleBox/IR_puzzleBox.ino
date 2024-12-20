@@ -510,6 +510,7 @@ const uint8_t IR_end_BUF = 0b01011010; //End   Align check
 void IR_send_ID(uint8_t IR_data){
 
   //Send a bunch of pulses
+  //for(uint8_t n = 0; n < 20; n++){
   for(uint8_t n = 0; n < 20; n++){
     IR_send_byte(IR_BUF);
     IR_send_byte(n);
@@ -604,7 +605,8 @@ void captureIR(){
   uint8_t oldIR = LOW;
 
   //Loop until nothing changes for a while
-  while( loopTime < 1000000 && IR_IN_BUFF_SIZE < 128){ //TODO: Probably can drop this down
+  //while( loopTime < 1000000 && IR_IN_BUFF_SIZE < 128){ //TODO: Probably can drop this down
+  while( loopTime < 1000000 && IR_IN_BUFF_SIZE < 15){ //TODO: Probably can drop this down
     curIR = digitalRead(IR_IN);
     
     //Track the change
